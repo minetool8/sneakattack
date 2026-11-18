@@ -1,0 +1,52 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+
+version = mod_version
+group = 'com.example.stealthtakedown'
+base { archivesName = 'stealthtakedown' }
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+minecraft {
+    mappings channel: 'official', version: minecraft_version
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                stealthtakedown {
+                    source sourceSets.main
+                }
+            }
+        }
+        client {}
+        server { args '--nogui' }
+    }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    // Better Combat and the zombieai mod are used through reflection only,
+    // so nothing else is needed to compile this mod.
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+tasks.named('jar', Jar).configure {
+    manifest {
+        attributes([
+            'Specification-Title'  : 'stealthtakedown',
+            'Implementation-Title' : 'stealthtakedown',
+            'Implementation-Version': project.version
+        ])
+    }
+    finalizedBy 'reobfJar'
+}

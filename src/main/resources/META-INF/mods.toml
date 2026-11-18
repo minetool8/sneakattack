@@ -1,0 +1,43 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+
+[[mods]]
+modId="stealthtakedown"
+version="1.0.0"
+displayName="Stealth Takedown"
+displayTest="IGNORE_ALL_VERSION"
+description='''
+Sneak up on a zombie that has not noticed you, hold right click with a melee weapon to charge a heavy blow
+and kill it in one hit. Charge-up animation uses Better Combat when it is installed.
+'''
+
+[[dependencies.stealthtakedown]]
+    modId="forge"
+    mandatory=true
+    versionRange="[47,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.stealthtakedown]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.20.1,1.21)"
+    ordering="NONE"
+    side="BOTH"
+
+# Optional: charge-up animation.
+[[dependencies.stealthtakedown]]
+    modId="bettercombat"
+    mandatory=false
+    versionRange="[1.9.0,)"
+    ordering="AFTER"
+    side="CLIENT"
+
+# Optional: zombies that are investigating a sound count as "aware".
+[[dependencies.stealthtakedown]]
+    modId="zombieai"
+    mandatory=false
+    versionRange="[1.0.0,)"
+    ordering="AFTER"
+    side="SERVER"
