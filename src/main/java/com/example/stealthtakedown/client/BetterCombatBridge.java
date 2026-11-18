@@ -101,15 +101,20 @@ final class BetterCombatBridge {
             Object[] attacks = (Object[]) attacksM.invoke(attrs);
             if (attacks == null || attacks.length == 0) return false;
 
-            // the heaviest attack of the weapon is the best "heavy blow"
+            // A knife or spear goes for the neck (stab), a heavy weapon comes down from above (slam),
+            // anything else uses its heaviest swing.
             Object best = null;
+            int bestRank = -1;
             double bestMult = -1.0;
             for (Object a : attacks) {
                 String anim = (String) animationM.invoke(a);
                 if (anim == null || anim.isEmpty()) continue;
+                String n = anim.toLowerCase(java.util.Locale.ROOT);
+                int rank = (n.contains("stab") && !n.contains("mounted")) ? 2 : (n.contains("slam") ? 1 : 0);
                 double mult = ((Number) damageMultM.invoke(a)).doubleValue();
-                if (mult > bestMult) {
+                if (rank > bestRank || (rank == bestRank && mult > bestMult)) {
                     best = a;
+                    bestRank = rank;
                     bestMult = mult;
                 }
             }

@@ -15,6 +15,11 @@ public final class TakedownConfig {
     public static final ForgeConfigSpec.BooleanValue CALM_ZOMBIE_DURING_CHARGE;
     public static final ForgeConfigSpec.BooleanValue DAMAGE_WEAPON;
     public static final ForgeConfigSpec.IntValue FOLLOW_THROUGH_TICKS;
+    public static final ForgeConfigSpec.BooleanValue BACKSTAB_ONLY;
+    public static final ForgeConfigSpec.DoubleValue MAX_FACING_DOT;
+    public static final ForgeConfigSpec.BooleanValue GRAB_ZOMBIE;
+    public static final ForgeConfigSpec.BooleanValue SLOW_PLAYER;
+    public static final ForgeConfigSpec.BooleanValue CAMERA_EFFECTS;
     public static final ForgeConfigSpec.IntValue SLOW_START_TICKS;
     public static final ForgeConfigSpec.DoubleValue SLOW_START_SPEED;
     public static final ForgeConfigSpec.ConfigValue<List<? extends String>> EXTRA_TARGETS;
@@ -26,7 +31,18 @@ public final class TakedownConfig {
         RANGE = b.comment("How close (blocks, measured to the zombie's body) the player must be for the prompt to appear.")
                 .defineInRange("range", 2.0, 0.5, 4.0);
         CHARGE_TICKS = b.comment("Charge time in ticks (20 = 1 second): from pressing right click until the blow lands.")
-                .defineInRange("chargeTicks", 16, 4, 200);
+                .defineInRange("chargeTicks", 24, 4, 200);
+        BACKSTAB_ONLY = b.comment("The takedown only works from behind: the zombie must be facing away from the player.")
+                .define("backstabOnly", true);
+        MAX_FACING_DOT = b.comment("How far behind the zombie the player must be. The zombie's facing direction dotted with the direction",
+                        "to the player must be below this: -1 = exactly behind, 0 = anywhere behind its shoulder line, -0.2 = rear cone (default).")
+                .defineInRange("maxFacingDot", -0.2, -1.0, 1.0);
+        GRAB_ZOMBIE = b.comment("While charging, the zombie is pulled in front of the player and turned to face the same way (a grab from behind).")
+                .define("grabZombie", true);
+        SLOW_PLAYER = b.comment("The player moves slowly while holding the zombie.")
+                .define("slowPlayerWhileCharging", true);
+        CAMERA_EFFECTS = b.comment("Client: subtle camera focus (slight zoom) while charging and a small camera kick when the blow lands.")
+                .define("cameraEffects", true);
         MIN_WEAPON_DAMAGE = b.comment("A held item counts as a melee weapon when its main-hand attack damage bonus is at least this.",
                         "Bare hands and guns have none, swords/axes/tools and modded melee weapons do.")
                 .defineInRange("minWeaponDamage", 2.0, 0.0, 100.0);

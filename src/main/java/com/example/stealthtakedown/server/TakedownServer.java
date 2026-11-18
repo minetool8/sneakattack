@@ -1,18 +1,25 @@
 package com.example.stealthtakedown.server;
 
+import com.example.stealthtakedown.StealthTakedownMod;
 import com.example.stealthtakedown.config.TakedownConfig;
 import com.example.stealthtakedown.net.TakedownNet;
 import com.example.stealthtakedown.net.TakedownPacket;
+import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.TickEvent;
@@ -25,12 +32,16 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Server side, authoritative: finds the zombie that gets the prompt, runs the charge timer, and kills the zombie
- * when the charge completes.
+ * Server side, authoritative: finds the zombie that gets the prompt (sneaking up from behind), holds it in a grab
+ * while the charge runs, and kills it when the charge completes.
  */
-@Mod.EventBusSubscriber(modid = com.example.stealthtakedown.StealthTakedownMod.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
+@Mod.EventBusSubscriber(modid = StealthTakedownMod.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class TakedownServer {
     private TakedownServer() {}
+
+    private static final UUID SLOW_UUID = UUID.fromString("7c1d2f0e-5a3b-4a6e-9d21-3f7b8c0a4e11");
+    /** Distance between the player and the held zombie (their bodies touch). */
+    private static final double GRAB_DISTANCE = 0.95;
 
     private static final class Charge {
         final int targetId;
@@ -88,16 +99,19 @@ public final class TakedownServer {
             }
             int ticks = TakedownConfig.CHARGE_TICKS.get();
             CHARGES.put(id, new Charge(target.getId(), p.getInventory().selected, ticks));
+            applySlow(p);
+            // the grab: cloth and leather rustling, quiet
+            p.serverLevel().playSound(null, target.getX(), target.getY() + 1.0, target.getZ(),
+                    SoundEvents.ARMOR_EQUIP_LEATHER, SoundSource.PLAYERS, 0.8F, 0.75F);
             TakedownNet.toPlayer(p, TakedownPacket.begin(target.getId(), ticks));
         } else if (pkt.type == TakedownPacket.C2S_CANCEL) {
-            CHARGES.remove(id);
-            LAST_CANDIDATE.remove(id);
+            endCharge(p);
         }
     }
 
     // ---------------------------------------------------------------- the logic
 
-    /** The unaware zombie in front of a sneaking, melee-armed player within range, or null. */
+    /** The unaware zombie behind which a sneaking, melee-armed player stands within range, or null. */
     public static Mob findCandidate(ServerPlayer p) {
         if (!p.isAlive() || p.isSpectator() || !p.isShiftKeyDown()) return null;
         if (!WeaponUtil.isMelee(p.getMainHandItem())) return null;
@@ -113,6 +127,7 @@ public final class TakedownServer {
             double d = distanceToBox(m, eye);
             if (d > range || d >= bestDist) continue;
             if (!Awareness.isUnaware(m)) continue;
+            if (!isBehind(m, p)) continue;
             Vec3 to = m.getBoundingBox().getCenter().subtract(eye);
             double len = to.length();
             if (len > 1.0E-4 && look.dot(to) / len < 0.25) continue;   // roughly in front of the player
@@ -121,6 +136,19 @@ public final class TakedownServer {
             bestDist = d;
         }
         return best;
+    }
+
+    /** True when the player is behind the zombie (relative to where its head points). */
+    private static boolean isBehind(Mob m, ServerPlayer p) {
+        if (!TakedownConfig.BACKSTAB_ONLY.get()) return true;
+        double yaw = Math.toRadians(m.getYHeadRot());
+        double fx = -Math.sin(yaw);
+        double fz = Math.cos(yaw);
+        double dx = p.getX() - m.getX();
+        double dz = p.getZ() - m.getZ();
+        double len = Math.sqrt(dx * dx + dz * dz);
+        if (len < 1.0E-4) return true;
+        return (fx * dx + fz * dz) / len < TakedownConfig.MAX_FACING_DOT.get();
     }
 
     private static double distanceToBox(Entity e, Vec3 point) {
@@ -151,22 +179,69 @@ public final class TakedownServer {
             mob.setDeltaMovement(0.0, v.y, 0.0);
             if (mob.getTarget() != null) mob.setTarget(null);
         }
+        if (TakedownConfig.GRAB_ZOMBIE.get()) {
+            grab(p, mob);
+        }
         c.ticksLeft--;
         if (c.ticksLeft <= 0) {
             strike(p, mob);
         }
     }
 
-    private static void abort(ServerPlayer p) {
+    /** Pulls the zombie in front of the player and turns it to face the same way: held from behind. */
+    private static void grab(ServerPlayer p, Mob mob) {
+        float yaw = Mth.approachDegrees(mob.getYRot(), p.getYRot(), 30.0F);
+        mob.setYRot(yaw);
+        mob.yBodyRot = yaw;
+        mob.setYHeadRot(yaw);
+        mob.setXRot(0.0F);
+
+        Vec3 look = p.getLookAngle();
+        double lx = look.x, lz = look.z;
+        double ll = Math.sqrt(lx * lx + lz * lz);
+        if (ll < 1.0E-4) return;
+        double wx = p.getX() + lx / ll * GRAB_DISTANCE;
+        double wz = p.getZ() + lz / ll * GRAB_DISTANCE;
+        double dx = wx - mob.getX();
+        double dz = wz - mob.getZ();
+        double dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < 0.03) return;
+        double step = Math.min(dist, 0.15);   // a smooth slide, never a teleport
+        double sx = dx / dist * step;
+        double sz = dz / dist * step;
+        if (mob.level().noCollision(mob, mob.getBoundingBox().move(sx, 0.0, sz))) {
+            mob.setPos(mob.getX() + sx, mob.getY(), mob.getZ() + sz);
+        }
+    }
+
+    private static void applySlow(ServerPlayer p) {
+        if (!TakedownConfig.SLOW_PLAYER.get()) return;
+        AttributeInstance a = p.getAttribute(Attributes.MOVEMENT_SPEED);
+        if (a != null && a.getModifier(SLOW_UUID) == null) {
+            a.addTransientModifier(new AttributeModifier(SLOW_UUID, "stealthtakedown_slow", -0.6,
+                    AttributeModifier.Operation.MULTIPLY_TOTAL));
+        }
+    }
+
+    private static void clearSlow(ServerPlayer p) {
+        AttributeInstance a = p.getAttribute(Attributes.MOVEMENT_SPEED);
+        if (a != null) a.removeModifier(SLOW_UUID);
+    }
+
+    private static void endCharge(ServerPlayer p) {
         CHARGES.remove(p.getUUID());
         LAST_CANDIDATE.remove(p.getUUID());
+        clearSlow(p);
+    }
+
+    private static void abort(ServerPlayer p) {
+        endCharge(p);
         TakedownNet.toPlayer(p, TakedownPacket.of(TakedownPacket.S2C_CANCELLED));
     }
 
-    /** The heavy blow: kills the mob no matter its health. */
+    /** The finishing blow: kills the mob no matter its health. */
     private static void strike(ServerPlayer p, Mob mob) {
-        CHARGES.remove(p.getUUID());
-        LAST_CANDIDATE.remove(p.getUUID());
+        endCharge(p);
 
         ServerLevel level = p.serverLevel();
         DamageSource src = level.damageSources().playerAttack(p);
@@ -177,11 +252,11 @@ public final class TakedownServer {
             mob.die(src);
         }
 
-        double x = mob.getX(), y = mob.getY() + mob.getBbHeight() * 0.6, z = mob.getZ();
-        level.playSound(null, x, y, z, SoundEvents.PLAYER_ATTACK_CRIT, SoundSource.PLAYERS, 1.0F, 0.7F);
-        level.playSound(null, x, y, z, SoundEvents.PLAYER_ATTACK_STRONG, SoundSource.PLAYERS, 1.0F, 0.8F);
-        level.sendParticles(ParticleTypes.CRIT, x, y, z, 24, 0.35, 0.4, 0.35, 0.4);
-        level.sendParticles(ParticleTypes.ENCHANTED_HIT, x, y, z, 12, 0.3, 0.3, 0.3, 0.3);
+        double x = mob.getX(), y = mob.getY() + mob.getBbHeight() * 0.8, z = mob.getZ();
+        // a heavy, dull impact and a small spray of blood; nothing flashy
+        level.playSound(null, x, y, z, SoundEvents.PLAYER_ATTACK_STRONG, SoundSource.PLAYERS, 1.0F, 0.65F);
+        level.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, Blocks.REDSTONE_BLOCK.defaultBlockState()),
+                x, y, z, 14, 0.12, 0.15, 0.12, 0.06);
         p.swing(InteractionHand.MAIN_HAND, false);   // other players see a swing
 
         if (TakedownConfig.DAMAGE_WEAPON.get() && !p.getAbilities().instabuild) {

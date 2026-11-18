@@ -22,6 +22,7 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.client.event.InputEvent;
 import net.minecraftforge.client.event.RenderLevelStageEvent;
+import net.minecraftforge.client.event.ViewportEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -43,6 +44,9 @@ public final class TakedownClient {
     private static boolean animatedByBetterCombat;
     private static boolean wasDown;
     private static long trimAt;
+    private static float zoom;        // 0..1, eased while charging
+    private static int kickTicks;     // camera kick after the blow
+    private static final int KICK_TOTAL = 8;
 
     // ------------------------------------------------------------ packets in
 
@@ -68,6 +72,7 @@ public final class TakedownClient {
             }
             case TakedownPacket.S2C_STRIKE -> {
                 charging = false;
+                kickTicks = KICK_TOTAL;
                 if (animatedByBetterCombat) {
                     int trim = TakedownConfig.FOLLOW_THROUGH_TICKS.get();
                     if (trim > 0 && mc.level != null) trimAt = mc.level.getGameTime() + trim;
@@ -104,6 +109,9 @@ public final class TakedownClient {
         }
         wasDown = down;
 
+        zoom += ((charging ? 1.0F : 0.0F) - zoom) * 0.2F;
+        if (kickTicks > 0) kickTicks--;
+
         if (trimAt > 0 && mc.level.getGameTime() >= trimAt) {
             trimAt = 0;
             BetterCombatBridge.stop(player, 4.0F);
@@ -125,6 +133,21 @@ public final class TakedownClient {
         }
     }
 
+    /** Subtle focus while holding the zombie: the view narrows a little. */
+    @SubscribeEvent
+    public static void onFov(ViewportEvent.ComputeFov e) {
+        if (!TakedownConfig.CAMERA_EFFECTS.get() || zoom < 0.001F) return;
+        e.setFOV(e.getFOV() * (1.0 - 0.10 * zoom));
+    }
+
+    /** A small downward kick when the blow lands. */
+    @SubscribeEvent
+    public static void onCameraAngles(ViewportEvent.ComputeCameraAngles e) {
+        if (!TakedownConfig.CAMERA_EFFECTS.get() || kickTicks <= 0) return;
+        float k = Mth.clamp((kickTicks - (float) e.getPartialTick()) / KICK_TOTAL, 0.0F, 1.0F);
+        e.setPitch(e.getPitch() + Mth.sin(k * Mth.PI) * 3.0F);
+    }
+
     @SubscribeEvent
     public static void onLogout(ClientPlayerNetworkEvent.LoggingOut e) {
         reset();
@@ -135,15 +158,17 @@ public final class TakedownClient {
         charging = false;
         wasDown = false;
         trimAt = 0;
+        zoom = 0.0F;
+        kickTicks = 0;
     }
 
     // -------------------------------------------------------------- the prompt
 
     // geometry in "pixels" (1 px = PIXEL blocks): a square frame around the 16 px mouse icon
-    private static final float PIXEL = 0.02F;
+    private static final float PIXEL = 0.005F;   // 1/4 of the first version (0.02)
     private static final float H = 17.0F;       // half size of the frame
     private static final float T = 4.0F;        // frame thickness
-    private static final int TRACK = 0xFFE8E8E8;
+    private static final int TRACK = 0xFF5A5A5E;   // dark grey, so the white fill stands out
 
     @SubscribeEvent
     public static void onRender(RenderLevelStageEvent e) {
@@ -163,7 +188,7 @@ public final class TakedownClient {
         ps.pushPose();
         ps.translate(x, y, z);
         ps.mulPose(mc.getEntityRenderDispatcher().cameraOrientation());   // face the camera
-        ps.translate(-0.65, 0.0, 0.0);                                      // next to the zombie (screen right)
+        ps.translate(-0.35, 0.0, 0.0);                                      // next to the zombie (screen right)
         ps.scale(-PIXEL, -PIXEL, PIXEL);                                    // y points down, like name tags
         Matrix4f m = ps.last().pose();
 
@@ -178,7 +203,7 @@ public final class TakedownClient {
         quad(buf, white, m, H - T, -H, H, H, TRACK, TRACK, TRACK, TRACK);            // right
         quad(buf, white, m, -H, H - T, H, H, TRACK, TRACK, TRACK, TRACK);            // bottom
         quad(buf, white, m, -H, -H, -H + T, H, TRACK, TRACK, TRACK, TRACK);          // left
-        // orange fill that runs clockwise from the top-left corner
+        // white fill that runs clockwise from the top-left corner
         if (progress > 0.0F) {
             float side = 2.0F * H;
             float d = progress * 4.0F * side;
@@ -209,7 +234,7 @@ public final class TakedownClient {
             }
         }
         // the right-click icon in the middle
-        quad(buf, RenderType.textSeeThrough(MOUSE), m, -8, -8, 8, 8, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, true);
+        quad(buf, RenderType.textSeeThrough(MOUSE), m, -9, -9, 9, 9, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, true);
         // label
         mc.font.drawInBatch(Component.translatable("stealthtakedown.prompt"), H + 5.0F, -4.0F, 0xFFFFFFFF, true, m, buf,
                 Font.DisplayMode.SEE_THROUGH, 0, FULL_LIGHT);
@@ -218,13 +243,9 @@ public final class TakedownClient {
         ps.popPose();
     }
 
-    /** Orange -> red-orange -> orange, like the reference frame. t = 0..1 along the whole frame. */
+    /** The loading fill is plain white. */
     private static int fillColor(float t) {
-        float k = t < 0.3F ? t / 0.3F : 1.0F - (t - 0.3F) / 0.7F * 0.7F;   // 0 at the start, 1 at 30%, 0.3 at the end
-        int r = (int) Mth.lerp(k, 246.0F, 240.0F);
-        int g = (int) Mth.lerp(k, 124.0F, 85.0F);
-        int b = (int) Mth.lerp(k, 30.0F, 38.0F);
-        return 0xFF000000 | (r << 16) | (g << 8) | b;
+        return 0xFFFFFFFF;
     }
 
     /** Colour order: top-left, bottom-left, bottom-right, top-right (same corner order as the glyph quads). */
