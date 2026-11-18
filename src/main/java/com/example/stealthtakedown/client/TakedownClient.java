@@ -139,6 +139,12 @@ public final class TakedownClient {
 
     // -------------------------------------------------------------- the prompt
 
+    // geometry in "pixels" (1 px = PIXEL blocks): a square frame around the 16 px mouse icon
+    private static final float PIXEL = 0.02F;
+    private static final float H = 17.0F;       // half size of the frame
+    private static final float T = 4.0F;        // frame thickness
+    private static final int TRACK = 0xFFE8E8E8;
+
     @SubscribeEvent
     public static void onRender(RenderLevelStageEvent e) {
         if (e.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES || candidateId < 0) return;
@@ -157,36 +163,90 @@ public final class TakedownClient {
         ps.pushPose();
         ps.translate(x, y, z);
         ps.mulPose(mc.getEntityRenderDispatcher().cameraOrientation());   // face the camera
-        ps.translate(-0.6, 0.0, 0.0);                                       // next to the zombie (screen right)
-        float s = 0.0165F;
-        ps.scale(-s, -s, s);                                                // 1 unit = 1 "pixel", y points down
+        ps.translate(-0.65, 0.0, 0.0);                                      // next to the zombie (screen right)
+        ps.scale(-PIXEL, -PIXEL, PIXEL);                                    // y points down, like name tags
         Matrix4f m = ps.last().pose();
 
         MultiBufferSource.BufferSource buf = mc.renderBuffers().bufferSource();
+        RenderType white = RenderType.textSeeThrough(WHITE);
         float progress = charging ? Mth.clamp((chargeElapsed + pt) / chargeTotal, 0.0F, 1.0F) : 0.0F;
 
-        quad(buf, RenderType.textSeeThrough(WHITE), m, -36, -11, 38, 11, 0.0F, 0.0F, 1.0F, 1.0F, 0xB0101014);
-        if (charging) {
-            quad(buf, RenderType.textSeeThrough(WHITE), m, -36, 12, 38, 16, 0.0F, 0.0F, 1.0F, 1.0F, 0xB0101014);
-            quad(buf, RenderType.textSeeThrough(WHITE), m, -36, 12, -36 + 74 * progress, 16, 0.0F, 0.0F, 1.0F, 1.0F, 0xFFE04040);
+        // dark backdrop inside the frame
+        quad(buf, white, m, -H + T, -H + T, H - T, H - T, 0xB0101014, 0xB0101014, 0xB0101014, 0xB0101014);
+        // grey track: the four sides
+        quad(buf, white, m, -H, -H, H, -H + T, TRACK, TRACK, TRACK, TRACK);          // top
+        quad(buf, white, m, H - T, -H, H, H, TRACK, TRACK, TRACK, TRACK);            // right
+        quad(buf, white, m, -H, H - T, H, H, TRACK, TRACK, TRACK, TRACK);            // bottom
+        quad(buf, white, m, -H, -H, -H + T, H, TRACK, TRACK, TRACK, TRACK);          // left
+        // orange fill that runs clockwise from the top-left corner
+        if (progress > 0.0F) {
+            float side = 2.0F * H;
+            float d = progress * 4.0F * side;
+            // top: left -> right
+            float a = Math.min(d, side);
+            quad(buf, white, m, -H, -H, -H + a, -H + T,
+                    fillColor(0.0F), fillColor(0.0F), fillColor(a / (4.0F * side)), fillColor(a / (4.0F * side)));
+            // right: top -> bottom
+            if (d > side) {
+                float b = Math.min(d - side, side);
+                quad(buf, white, m, H - T, -H, H, -H + b,
+                        fillColor(side / (4.0F * side)), fillColor((side + b) / (4.0F * side)),
+                        fillColor((side + b) / (4.0F * side)), fillColor(side / (4.0F * side)));
+            }
+            // bottom: right -> left
+            if (d > 2.0F * side) {
+                float c = Math.min(d - 2.0F * side, side);
+                quad(buf, white, m, H - c, H - T, H, H,
+                        fillColor((2.0F * side + c) / (4.0F * side)), fillColor((2.0F * side + c) / (4.0F * side)),
+                        fillColor(2.0F * side / (4.0F * side)), fillColor(2.0F * side / (4.0F * side)));
+            }
+            // left: bottom -> top
+            if (d > 3.0F * side) {
+                float l = Math.min(d - 3.0F * side, side);
+                quad(buf, white, m, -H, H - l, -H + T, H,
+                        fillColor((3.0F * side + l) / (4.0F * side)), fillColor(3.0F * side / (4.0F * side)),
+                        fillColor(3.0F * side / (4.0F * side)), fillColor((3.0F * side + l) / (4.0F * side)));
+            }
         }
-        quad(buf, RenderType.textSeeThrough(MOUSE), m, -34, -8, -18, 8, 0.0F, 0.0F, 1.0F, 1.0F, 0xFFFFFFFF);
-        mc.font.drawInBatch(Component.translatable("stealthtakedown.prompt"), -14.0F, -4.0F, 0xFFFFFFFF, false, m, buf,
+        // the right-click icon in the middle
+        quad(buf, RenderType.textSeeThrough(MOUSE), m, -8, -8, 8, 8, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, true);
+        // label
+        mc.font.drawInBatch(Component.translatable("stealthtakedown.prompt"), H + 5.0F, -4.0F, 0xFFFFFFFF, true, m, buf,
                 Font.DisplayMode.SEE_THROUGH, 0, FULL_LIGHT);
         buf.endBatch();
 
         ps.popPose();
     }
 
+    /** Orange -> red-orange -> orange, like the reference frame. t = 0..1 along the whole frame. */
+    private static int fillColor(float t) {
+        float k = t < 0.3F ? t / 0.3F : 1.0F - (t - 0.3F) / 0.7F * 0.7F;   // 0 at the start, 1 at 30%, 0.3 at the end
+        int r = (int) Mth.lerp(k, 246.0F, 240.0F);
+        int g = (int) Mth.lerp(k, 124.0F, 85.0F);
+        int b = (int) Mth.lerp(k, 30.0F, 38.0F);
+        return 0xFF000000 | (r << 16) | (g << 8) | b;
+    }
+
+    /** Colour order: top-left, bottom-left, bottom-right, top-right (same corner order as the glyph quads). */
     private static void quad(MultiBufferSource.BufferSource buf, RenderType type, Matrix4f m,
                              float x0, float y0, float x1, float y1,
-                             float u0, float v0, float u1, float v1, int argb) {
-        int a = (argb >>> 24) & 255, r = (argb >>> 16) & 255, g = (argb >>> 8) & 255, b = argb & 255;
+                             int cTL, int cBL, int cBR, int cTR) {
+        quad(buf, type, m, x0, y0, x1, y1, cTL, cBL, cBR, cTR, false);
+    }
+
+    private static void quad(MultiBufferSource.BufferSource buf, RenderType type, Matrix4f m,
+                             float x0, float y0, float x1, float y1,
+                             int cTL, int cBL, int cBR, int cTR, boolean textured) {
         VertexConsumer vc = buf.getBuffer(type);
-        vc.vertex(m, x0, y0, 0.0F).color(r, g, b, a).uv(u0, v0).uv2(FULL_LIGHT).endVertex();
-        vc.vertex(m, x0, y1, 0.0F).color(r, g, b, a).uv(u0, v1).uv2(FULL_LIGHT).endVertex();
-        vc.vertex(m, x1, y1, 0.0F).color(r, g, b, a).uv(u1, v1).uv2(FULL_LIGHT).endVertex();
-        vc.vertex(m, x1, y0, 0.0F).color(r, g, b, a).uv(u1, v0).uv2(FULL_LIGHT).endVertex();
+        vertex(vc, m, x0, y0, 0.0F, 0.0F, cTL);
+        vertex(vc, m, x0, y1, 0.0F, 1.0F, cBL);
+        vertex(vc, m, x1, y1, 1.0F, 1.0F, cBR);
+        vertex(vc, m, x1, y0, 1.0F, 0.0F, cTR);
         buf.endBatch(type);   // drawn right away so the layers stack in call order
+    }
+
+    private static void vertex(VertexConsumer vc, Matrix4f m, float x, float y, float u, float v, int argb) {
+        vc.vertex(m, x, y, 0.0F).color((argb >>> 16) & 255, (argb >>> 8) & 255, argb & 255, (argb >>> 24) & 255)
+                .uv(u, v).uv2(FULL_LIGHT).endVertex();
     }
 }

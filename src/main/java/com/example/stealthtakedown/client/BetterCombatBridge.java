@@ -1,18 +1,25 @@
 package com.example.stealthtakedown.client;
 
 import com.example.stealthtakedown.StealthTakedownMod;
+import com.example.stealthtakedown.config.TakedownConfig;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.item.ItemStack;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Talks to Better Combat through reflection (no compile dependency, and the mod still works without it).
  *
- * The wind-up is slowed by replaying the weapon's own attack animation with a long length: Better Combat plays the
- * first "upswing" fraction of that animation before the hit moment, so length = chargeTicks / upswing makes the
- * wind-up last exactly chargeTicks. The blow lands at the end of the charge.
+ * 1. The weapon's own attack animation is started with a length that makes the wind-up end exactly when the charge
+ *    ends (length = (chargeTicks - slowShift) / upswing).
+ * 2. Better Combat drives the animation speed with "gears" (speed changes at given tick times). We then rewrite
+ *    those gears: the first slowStartTicks run at slowStartSpeed x the normal speed, after that everything continues
+ *    at Better Combat's normal speeds, only shifted later by the time the slow start added.
  */
 final class BetterCombatBridge {
     private BetterCombatBridge() {}
@@ -20,7 +27,12 @@ final class BetterCombatBridge {
     private static boolean initDone;
     private static boolean available;
     private static Method getAttributes, attacksM, isTwoHandedM, animationM, upswingM, damageMultM, playM, stopM;
-    private static Class<?> handClass;
+    private static Class<?> handClass, subStackClass;
+    // slow start (optional: if any of this is missing the animation just plays at Better Combat's normal speed)
+    private static boolean slowOk;
+    private static Field subStackSpeedF, gearsF, speedF;
+    private static Method setSpeedM, gearTimeM, gearSpeedM;
+    private static Constructor<?> gearCtor;
 
     private static void init() {
         if (initDone) return;
@@ -43,7 +55,39 @@ final class BetterCombatBridge {
         } catch (Throwable t) {
             available = false;
             StealthTakedownMod.LOGGER.info("Better Combat not found or API changed: charge animation disabled ({})", t.toString());
+            return;
         }
+        try {
+            subStackClass = Class.forName("net.bettercombat.client.animation.AttackAnimationSubStack");
+            Class<?> modifier = Class.forName("net.bettercombat.client.animation.modifier.TransmissionSpeedModifier");
+            Class<?> gear = Class.forName("net.bettercombat.client.animation.modifier.TransmissionSpeedModifier$Gear");
+            subStackSpeedF = subStackClass.getField("speed");
+            gearsF = findField(modifier, "gears");
+            speedF = findField(modifier, "speed");
+            setSpeedM = modifier.getMethod("set", float.class, List.class);
+            gearCtor = gear.getDeclaredConstructor(float.class, float.class);
+            gearCtor.setAccessible(true);
+            gearTimeM = gear.getDeclaredMethod("time");
+            gearTimeM.setAccessible(true);
+            gearSpeedM = gear.getDeclaredMethod("speed");
+            gearSpeedM.setAccessible(true);
+            slowOk = gearsF != null && speedF != null;
+        } catch (Throwable t) {
+            slowOk = false;
+            StealthTakedownMod.LOGGER.info("Slow-start hook unavailable, using Better Combat's normal speed ({})", t.toString());
+        }
+    }
+
+    private static Field findField(Class<?> c, String name) {
+        for (; c != null; c = c.getSuperclass()) {
+            try {
+                Field f = c.getDeclaredField(name);
+                f.setAccessible(true);
+                return f;
+            } catch (NoSuchFieldException ignored) {
+            }
+        }
+        return null;
     }
 
     /** @return true when a Better Combat animation was started. */
@@ -75,14 +119,56 @@ final class BetterCombatBridge {
             double upswing = Mth.clamp(((Number) upswingM.invoke(best)).doubleValue(), 0.25, 0.9);
             boolean twoHanded = (Boolean) isTwoHandedM.invoke(attrs);
             Object hand = Enum.valueOf((Class) handClass, twoHanded ? "TWO_HANDED" : "MAIN_HAND");
-            float length = (float) (chargeTicks / upswing);
+
+            int slow = Math.min(TakedownConfig.SLOW_START_TICKS.get(), chargeTicks / 2);
+            double f = TakedownConfig.SLOW_START_SPEED.get();
+            double shift = slow * (1.0 - f);   // real ticks the slow start adds to the wind-up
+            float length = (float) Math.max(2.0, (chargeTicks - shift) / upswing);
             playM.invoke(player, anim, hand, length, (float) upswing);
+
+            if (slow > 0 && slowOk) {
+                try {
+                    applySlowStart(player, slow, f, shift);
+                } catch (Throwable t) {
+                    slowOk = false;
+                    StealthTakedownMod.LOGGER.warn("Slow start failed, playing at normal speed", t);
+                }
+            }
             return true;
         } catch (Throwable t) {
             StealthTakedownMod.LOGGER.warn("Better Combat animation failed", t);
             available = false;
             return false;
         }
+    }
+
+    private static void applySlowStart(LocalPlayer player, int slowTicks, double factor, double shift) throws Exception {
+        Object subStack = null;
+        for (Class<?> c = player.getClass(); c != null && subStack == null; c = c.getSuperclass()) {
+            for (Field fld : c.getDeclaredFields()) {
+                if (fld.getType() == subStackClass) {
+                    fld.setAccessible(true);
+                    subStack = fld.get(player);
+                    break;
+                }
+            }
+        }
+        if (subStack == null) return;
+        Object modifier = subStackSpeedF.get(subStack);
+        float normal = ((Number) speedF.get(modifier)).floatValue();
+        if (!(normal > 0.0F) || Float.isInfinite(normal)) return;
+        List<?> old = (List<?>) gearsF.get(modifier);
+
+        List<Object> gears = new ArrayList<>();
+        gears.add(gearCtor.newInstance((float) slowTicks, normal));   // slow start over: back to the normal speed
+        if (old != null) {
+            for (Object g : old) {                                    // Better Combat's own speed changes, shifted later
+                float time = ((Number) gearTimeM.invoke(g)).floatValue();
+                float speed = ((Number) gearSpeedM.invoke(g)).floatValue();
+                gears.add(gearCtor.newInstance((float) (time + shift), speed));
+            }
+        }
+        setSpeedM.invoke(modifier, (float) (normal * factor), gears);
     }
 
     static void stop(LocalPlayer player, float fadeTicks) {
