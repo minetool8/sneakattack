@@ -28,25 +28,27 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import org.joml.Matrix4f;
 
-/** Client side: the right-click prompt next to the zombie, the hold-to-charge input and the swing animation. */
+/** Client side: the right-click prompt next to the zombie, the hold-to-charge input, the swing and camera effects. */
 @Mod.EventBusSubscriber(modid = StealthTakedownMod.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE, value = Dist.CLIENT)
 public final class TakedownClient {
     private TakedownClient() {}
 
-    private static final ResourceLocation MOUSE = new ResourceLocation(StealthTakedownMod.MODID, "textures/gui/mouse_right.png");
     private static final ResourceLocation WHITE = new ResourceLocation(StealthTakedownMod.MODID, "textures/gui/white.png");
     private static final int FULL_LIGHT = 15728880;
 
     private static int candidateId = -1;
     private static boolean charging;
+    private static boolean struggling;   // the zombie is fighting back: the bar freezes, the camera shakes
     private static int chargeTotal;
     private static int chargeElapsed;
     private static boolean animatedByBetterCombat;
     private static boolean wasDown;
     private static long trimAt;
-    private static float zoom;        // 0..1, eased while charging
-    private static int kickTicks;     // camera kick after the blow
+    private static float zoom;           // 0..1, eased while charging
+    private static int kickTicks;        // camera kick after the blow
+    private static int shakeTicks;       // camera shake after being shoved
     private static final int KICK_TOTAL = 8;
+    private static final int SHAKE_TOTAL = 14;
 
     // ------------------------------------------------------------ packets in
 
@@ -62,6 +64,7 @@ public final class TakedownClient {
                     return;
                 }
                 charging = true;
+                struggling = false;
                 chargeTotal = Math.max(1, p.ticks);
                 chargeElapsed = 0;
                 animatedByBetterCombat = BetterCombatBridge.play(player, player.getMainHandItem(), p.ticks);
@@ -69,9 +72,18 @@ public final class TakedownClient {
             case TakedownPacket.S2C_CANCELLED -> {
                 if (charging) BetterCombatBridge.stop(player, 3.0F);
                 charging = false;
+                struggling = false;
+            }
+            case TakedownPacket.S2C_STRUGGLE -> struggling = true;
+            case TakedownPacket.S2C_BROKEN -> {
+                charging = false;
+                struggling = false;
+                shakeTicks = SHAKE_TOTAL;
+                BetterCombatBridge.stop(player, 2.0F);
             }
             case TakedownPacket.S2C_STRIKE -> {
                 charging = false;
+                struggling = false;
                 kickTicks = KICK_TOTAL;
                 if (animatedByBetterCombat) {
                     int trim = TakedownConfig.FOLLOW_THROUGH_TICKS.get();
@@ -97,9 +109,10 @@ public final class TakedownClient {
         }
         boolean down = mc.options.keyUse.isDown() && mc.screen == null;
         if (charging) {
-            chargeElapsed++;
+            if (!struggling) chargeElapsed++;
             if (!down) {
                 charging = false;
+                struggling = false;
                 TakedownNet.toServer(TakedownPacket.of(TakedownPacket.C2S_CANCEL));
                 BetterCombatBridge.stop(player, 3.0F);
             }
@@ -111,6 +124,7 @@ public final class TakedownClient {
 
         zoom += ((charging ? 1.0F : 0.0F) - zoom) * 0.2F;
         if (kickTicks > 0) kickTicks--;
+        if (shakeTicks > 0) shakeTicks--;
 
         if (trimAt > 0 && mc.level.getGameTime() >= trimAt) {
             trimAt = 0;
@@ -133,6 +147,8 @@ public final class TakedownClient {
         }
     }
 
+    // ---------------------------------------------------------------- camera
+
     /** Subtle focus while holding the zombie: the view narrows a little. */
     @SubscribeEvent
     public static void onFov(ViewportEvent.ComputeFov e) {
@@ -140,12 +156,29 @@ public final class TakedownClient {
         e.setFOV(e.getFOV() * (1.0 - 0.10 * zoom));
     }
 
-    /** A small downward kick when the blow lands. */
     @SubscribeEvent
     public static void onCameraAngles(ViewportEvent.ComputeCameraAngles e) {
-        if (!TakedownConfig.CAMERA_EFFECTS.get() || kickTicks <= 0) return;
-        float k = Mth.clamp((kickTicks - (float) e.getPartialTick()) / KICK_TOTAL, 0.0F, 1.0F);
-        e.setPitch(e.getPitch() + Mth.sin(k * Mth.PI) * 3.0F);
+        if (!TakedownConfig.CAMERA_EFFECTS.get()) return;
+        Minecraft mc = Minecraft.getInstance();
+        float pt = (float) e.getPartialTick();
+        float time = (mc.level != null ? mc.level.getGameTime() : 0L) + pt;
+
+        // a small downward kick when the blow lands
+        if (kickTicks > 0) {
+            float k = Mth.clamp((kickTicks - pt) / KICK_TOTAL, 0.0F, 1.0F);
+            e.setPitch(e.getPitch() + Mth.sin(k * Mth.PI) * 3.0F);
+        }
+        // the zombie thrashes in the player's grip: a steady tremble
+        if (struggling) {
+            e.setRoll(e.getRoll() + Mth.sin(time * 2.7F) * 1.3F);
+            e.setPitch(e.getPitch() + Mth.sin(time * 3.9F) * 0.6F);
+        }
+        // being shoved: a hard jolt that fades out
+        if (shakeTicks > 0) {
+            float k = Mth.clamp((shakeTicks - pt) / SHAKE_TOTAL, 0.0F, 1.0F);
+            e.setRoll(e.getRoll() + Mth.sin(time * 2.4F) * 4.5F * k);
+            e.setPitch(e.getPitch() - Mth.sin(k * Mth.PI) * 5.0F);   // head snaps back
+        }
     }
 
     @SubscribeEvent
@@ -156,19 +189,31 @@ public final class TakedownClient {
     private static void reset() {
         candidateId = -1;
         charging = false;
+        struggling = false;
         wasDown = false;
         trimAt = 0;
         zoom = 0.0F;
         kickTicks = 0;
+        shakeTicks = 0;
     }
 
     // -------------------------------------------------------------- the prompt
 
-    // geometry in "pixels" (1 px = PIXEL blocks): a square frame around the 16 px mouse icon
-    private static final float PIXEL = 0.005F;   // 1/4 of the first version (0.02)
+    // Everything is built from plain coloured rectangles (one 4x4 white texture, tinted by vertex colour), so there is
+    // no icon texture that could fail to load. Units are "pixels": 1 px = PIXEL blocks.
+    private static final float PIXEL = 0.005F;
     private static final float H = 17.0F;       // half size of the frame
     private static final float T = 4.0F;        // frame thickness
-    private static final int TRACK = 0xFF5A5A5E;   // dark grey, so the white fill stands out
+    private static final int TRACK = 0xFF5A5A5E;
+    private static final int FILL = 0xFFFFFFFF;
+    private static final int BACKDROP = 0xB0101014;
+
+    // the right-click mouse, drawn on a 16x16 grid (same design as the old PNG)
+    private static final int M_OUTLINE = 0xFF1E1E22;
+    private static final int M_BODY = 0xFFEBEBEE;
+    private static final int M_SHADE = 0xFFBEBEC6;
+    private static final int M_RED = 0xFFD63030;
+    private static final int M_RED_DARK = 0xFF961C1C;
 
     @SubscribeEvent
     public static void onRender(RenderLevelStageEvent e) {
@@ -193,49 +238,45 @@ public final class TakedownClient {
         Matrix4f m = ps.last().pose();
 
         MultiBufferSource.BufferSource buf = mc.renderBuffers().bufferSource();
-        RenderType white = RenderType.textSeeThrough(WHITE);
-        float progress = charging ? Mth.clamp((chargeElapsed + pt) / chargeTotal, 0.0F, 1.0F) : 0.0F;
+        float progress = charging ? Mth.clamp((chargeElapsed + (struggling ? 0.0F : pt)) / chargeTotal, 0.0F, 1.0F) : 0.0F;
 
-        // dark backdrop inside the frame
-        quad(buf, white, m, -H + T, -H + T, H - T, H - T, 0xB0101014, 0xB0101014, 0xB0101014, 0xB0101014);
-        // grey track: the four sides
-        quad(buf, white, m, -H, -H, H, -H + T, TRACK, TRACK, TRACK, TRACK);          // top
-        quad(buf, white, m, H - T, -H, H, H, TRACK, TRACK, TRACK, TRACK);            // right
-        quad(buf, white, m, -H, H - T, H, H, TRACK, TRACK, TRACK, TRACK);            // bottom
-        quad(buf, white, m, -H, -H, -H + T, H, TRACK, TRACK, TRACK, TRACK);          // left
+        // one batch, drawn in call order (the see-through type has no depth test)
+        VertexConsumer vc = buf.getBuffer(RenderType.textSeeThrough(WHITE));
+
+        // backdrop and the grey track: the four sides of the frame
+        rect(vc, m, -H + T, -H + T, H - T, H - T, BACKDROP);
+        rect(vc, m, -H, -H, H, -H + T, TRACK);          // top
+        rect(vc, m, H - T, -H, H, H, TRACK);            // right
+        rect(vc, m, -H, H - T, H, H, TRACK);            // bottom
+        rect(vc, m, -H, -H, -H + T, H, TRACK);          // left
+
         // white fill that runs clockwise from the top-left corner
         if (progress > 0.0F) {
             float side = 2.0F * H;
             float d = progress * 4.0F * side;
-            // top: left -> right
-            float a = Math.min(d, side);
-            quad(buf, white, m, -H, -H, -H + a, -H + T,
-                    fillColor(0.0F), fillColor(0.0F), fillColor(a / (4.0F * side)), fillColor(a / (4.0F * side)));
-            // right: top -> bottom
-            if (d > side) {
-                float b = Math.min(d - side, side);
-                quad(buf, white, m, H - T, -H, H, -H + b,
-                        fillColor(side / (4.0F * side)), fillColor((side + b) / (4.0F * side)),
-                        fillColor((side + b) / (4.0F * side)), fillColor(side / (4.0F * side)));
-            }
-            // bottom: right -> left
-            if (d > 2.0F * side) {
-                float c = Math.min(d - 2.0F * side, side);
-                quad(buf, white, m, H - c, H - T, H, H,
-                        fillColor((2.0F * side + c) / (4.0F * side)), fillColor((2.0F * side + c) / (4.0F * side)),
-                        fillColor(2.0F * side / (4.0F * side)), fillColor(2.0F * side / (4.0F * side)));
-            }
-            // left: bottom -> top
-            if (d > 3.0F * side) {
-                float l = Math.min(d - 3.0F * side, side);
-                quad(buf, white, m, -H, H - l, -H + T, H,
-                        fillColor((3.0F * side + l) / (4.0F * side)), fillColor(3.0F * side / (4.0F * side)),
-                        fillColor(3.0F * side / (4.0F * side)), fillColor((3.0F * side + l) / (4.0F * side)));
-            }
+            rect(vc, m, -H, -H, -H + Math.min(d, side), -H + T, FILL);                                   // top: left -> right
+            if (d > side) rect(vc, m, H - T, -H, H, -H + Math.min(d - side, side), FILL);                // right: down
+            if (d > 2.0F * side) rect(vc, m, H - Math.min(d - 2.0F * side, side), H - T, H, H, FILL);    // bottom: right -> left
+            if (d > 3.0F * side) rect(vc, m, -H, H - Math.min(d - 3.0F * side, side), -H + T, H, FILL);  // left: up
         }
-        // the right-click icon in the middle
-        quad(buf, RenderType.textSeeThrough(MOUSE), m, -9, -9, 9, 9, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, true);
-        // label
+
+        // the right-click mouse in the middle
+        float c = 18.0F / 16.0F;   // size of one grid cell
+        float o = -9.0F;           // top-left of the icon
+        cell(vc, m, o, c, 4, 0, 11, 0, M_OUTLINE);
+        cell(vc, m, o, c, 4, 1, 11, 1, M_OUTLINE);
+        cell(vc, m, o, c, 3, 2, 3, 14, M_OUTLINE);
+        cell(vc, m, o, c, 12, 2, 12, 14, M_OUTLINE);
+        cell(vc, m, o, c, 4, 15, 11, 15, M_OUTLINE);
+        cell(vc, m, o, c, 4, 2, 11, 14, M_BODY);
+        cell(vc, m, o, c, 8, 2, 11, 7, M_RED);           // right button
+        cell(vc, m, o, c, 8, 7, 11, 7, M_RED_DARK);
+        cell(vc, m, o, c, 7, 2, 8, 7, M_OUTLINE);        // divider and wheel
+        cell(vc, m, o, c, 7, 4, 8, 4, M_SHADE);
+        cell(vc, m, o, c, 4, 8, 11, 8, M_OUTLINE);       // split between buttons and body
+        cell(vc, m, o, c, 4, 14, 11, 14, M_SHADE);
+        buf.endBatch(RenderType.textSeeThrough(WHITE));
+
         mc.font.drawInBatch(Component.translatable("stealthtakedown.prompt"), H + 5.0F, -4.0F, 0xFFFFFFFF, true, m, buf,
                 Font.DisplayMode.SEE_THROUGH, 0, FULL_LIGHT);
         buf.endBatch();
@@ -243,27 +284,18 @@ public final class TakedownClient {
         ps.popPose();
     }
 
-    /** The loading fill is plain white. */
-    private static int fillColor(float t) {
-        return 0xFFFFFFFF;
+    /** Fills the grid cells gx0..gx1 / gy0..gy1 (inclusive) of the mouse icon. */
+    private static void cell(VertexConsumer vc, Matrix4f m, float origin, float size,
+                             int gx0, int gy0, int gx1, int gy1, int argb) {
+        rect(vc, m, origin + gx0 * size, origin + gy0 * size, origin + (gx1 + 1) * size, origin + (gy1 + 1) * size, argb);
     }
 
-    /** Colour order: top-left, bottom-left, bottom-right, top-right (same corner order as the glyph quads). */
-    private static void quad(MultiBufferSource.BufferSource buf, RenderType type, Matrix4f m,
-                             float x0, float y0, float x1, float y1,
-                             int cTL, int cBL, int cBR, int cTR) {
-        quad(buf, type, m, x0, y0, x1, y1, cTL, cBL, cBR, cTR, false);
-    }
-
-    private static void quad(MultiBufferSource.BufferSource buf, RenderType type, Matrix4f m,
-                             float x0, float y0, float x1, float y1,
-                             int cTL, int cBL, int cBR, int cTR, boolean textured) {
-        VertexConsumer vc = buf.getBuffer(type);
-        vertex(vc, m, x0, y0, 0.0F, 0.0F, cTL);
-        vertex(vc, m, x0, y1, 0.0F, 1.0F, cBL);
-        vertex(vc, m, x1, y1, 1.0F, 1.0F, cBR);
-        vertex(vc, m, x1, y0, 1.0F, 0.0F, cTR);
-        buf.endBatch(type);   // drawn right away so the layers stack in call order
+    /** A solid rectangle; corner order matches the glyph quads Minecraft draws. */
+    private static void rect(VertexConsumer vc, Matrix4f m, float x0, float y0, float x1, float y1, int argb) {
+        vertex(vc, m, x0, y0, 0.0F, 0.0F, argb);
+        vertex(vc, m, x0, y1, 0.0F, 1.0F, argb);
+        vertex(vc, m, x1, y1, 1.0F, 1.0F, argb);
+        vertex(vc, m, x1, y0, 1.0F, 0.0F, argb);
     }
 
     private static void vertex(VertexConsumer vc, Matrix4f m, float x, float y, float u, float v, int argb) {

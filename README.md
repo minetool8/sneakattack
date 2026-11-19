@@ -28,7 +28,15 @@ range, backstabOnly, maxFacingDot, grabZombie, slowPlayerWhileCharging, cameraEf
 investigatingCountsAsAware (false), calmZombieDuringCharge, damageWeapon, followThroughTicks, extraTargets, weaponBlacklist.
 An existing config file keeps its old values: delete `config/stealthtakedown-common.toml` after updating.
 
+## Commands (op / cheats, permission level 2)
+* `/takedown refuser` - spawns a frozen test zombie 3 blocks ahead, facing away. It ALWAYS breaks free when you grab it:
+  turns around, shakes its head violently, shoves you back and attacks.
+* `/takedown why` - prints, check by check, why the nearest zombie does or does not show the prompt
+  (sneaking, weapon, distance, aware?, behind?, line of sight). Send me that output if the icon is missing.
+
 ## Notes
+* Normal zombies resist with `resistChance` (25%). The grabbed zombie groans, muffled (low pitch, quiet) - this is
+  the vanilla zombie hurt sound, pitched down; a true muffle filter would need a custom sound file.
 * Charge animation: plays the heaviest attack animation of the held weapon, then rewrites Better Combat's speed
   "gears" so the first `slowStartTicks` run at `slowStartSpeed` x normal and the rest is normal speed.
   Tune `chargeTicks`, `slowStartTicks`, `slowStartSpeed` if it looks off for some weapons.

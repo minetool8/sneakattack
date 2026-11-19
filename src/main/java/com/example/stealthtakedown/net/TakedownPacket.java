@@ -19,6 +19,8 @@ public class TakedownPacket {
     public static final byte S2C_BEGIN = 3;       // charge accepted: entityId, ticks
     public static final byte S2C_CANCELLED = 4;   // charge refused / broken
     public static final byte S2C_STRIKE = 5;      // the blow landed
+    public static final byte S2C_STRUGGLE = 6;    // the zombie starts fighting back
+    public static final byte S2C_BROKEN = 7;      // the zombie broke free and shoved the player
 
     public final byte type;
     public final int entityId;

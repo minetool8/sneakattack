@@ -35,7 +35,7 @@ public final class Awareness {
     }
 
     /** zombieai integration through reflection (no compile dependency). */
-    private static boolean isInvestigating(Mob mob) {
+    public static boolean isInvestigating(Mob mob) {
         if (!tried) {
             tried = true;
             try {

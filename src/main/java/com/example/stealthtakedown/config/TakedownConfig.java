@@ -15,6 +15,8 @@ public final class TakedownConfig {
     public static final ForgeConfigSpec.BooleanValue CALM_ZOMBIE_DURING_CHARGE;
     public static final ForgeConfigSpec.BooleanValue DAMAGE_WEAPON;
     public static final ForgeConfigSpec.IntValue FOLLOW_THROUGH_TICKS;
+    public static final ForgeConfigSpec.DoubleValue RESIST_CHANCE;
+    public static final ForgeConfigSpec.BooleanValue GRAB_VOICE;
     public static final ForgeConfigSpec.BooleanValue BACKSTAB_ONLY;
     public static final ForgeConfigSpec.DoubleValue MAX_FACING_DOT;
     public static final ForgeConfigSpec.BooleanValue GRAB_ZOMBIE;
@@ -32,6 +34,11 @@ public final class TakedownConfig {
                 .defineInRange("range", 2.0, 0.5, 4.0);
         CHARGE_TICKS = b.comment("Charge time in ticks (20 = 1 second): from pressing right click until the blow lands.")
                 .defineInRange("chargeTicks", 24, 4, 200);
+        RESIST_CHANCE = b.comment("Chance (0..1) that the grabbed zombie breaks free: it turns around, shakes its head violently,",
+                        "shoves the player away and attacks. 0.25 = 25%.")
+                .defineInRange("resistChance", 0.25, 0.0, 1.0);
+        GRAB_VOICE = b.comment("The grabbed zombie groans in pain, muffled (low and quiet).")
+                .define("grabVoice", true);
         BACKSTAB_ONLY = b.comment("The takedown only works from behind: the zombie must be facing away from the player.")
                 .define("backstabOnly", true);
         MAX_FACING_DOT = b.comment("How far behind the zombie the player must be. The zombie's facing direction dotted with the direction",
